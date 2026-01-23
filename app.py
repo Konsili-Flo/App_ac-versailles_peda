@@ -13,9 +13,13 @@ from reportlab.lib.utils import ImageReader
 
 # --- Chemins des fichiers ---
 EXCEL_PATH = "PCP.xlsx"
-PROTOCOLE_PDF_PATH = "Protocole_repartition.pdf"  # renomme ton PDF avec ce nom
-PDF_LIBRARY_DIR = "pdf_competences"  # dossier pour stocker tes PDF par compétence
-LOGO_PATH = "logo_academie_versailles.png"        # logo à placer à côté de app.py
+PROTOCOLE_PDF_PATH = "Protocole_repartition.pdf"
+LOGO_PATH = "logo_academie_versailles.png"
+
+# Bibliothèques PDF
+PDF_COMPETENCES_DIR = "pdf_competences"  # PDF exercices
+PDF_CORRECTION_DIR = "pdf_correction"    # PDF corrections
+
 
 # --- Constantes de mise en page PDF ---
 PAGE_WIDTH, PAGE_HEIGHT = A4
@@ -27,32 +31,23 @@ LINE_HEIGHT = 15
 TEXT_WIDTH = PAGE_WIDTH - LEFT_MARGIN - RIGHT_MARGIN
 
 
-# --- Fonctions utilitaires pour Excel ---
+# -------------------- Excel --------------------
 
 @st.cache_data
 def load_class_list():
-    """
-    Liste des classes depuis l'onglet 'Continuité pédagogique'.
-    On suppose que la première colonne contient les noms de classes.
-    """
     df = pd.read_excel(EXCEL_PATH, sheet_name="Continuité pédagogique")
-    col = df.columns[0]  # ex : "Choix de la classe"
+    col = df.columns[0]
     return df[col].dropna().tolist()
 
 
 @st.cache_data
 def load_competences_for_class(classe: str) -> pd.DataFrame:
-    """
-    Charge les compétences pour une classe (PS, MS, GS, CP, CE1...).
-    On suppose que chaque onglet porte le nom de la classe.
-    """
     df = pd.read_excel(EXCEL_PATH, sheet_name=classe)
     expected_cols = ["Domaine", "Sous domaine", "Compétence", "Activité proposée"]
-    df = df[expected_cols]
-    return df
+    return df[expected_cols]
 
 
-# --- Fiche texte (structure commune) ---
+# -------------------- Fiche texte --------------------
 
 def build_fiche_text(
     ecole,
@@ -69,8 +64,7 @@ def build_fiche_text(
     logistique,
     communication_familles,
 ):
-    """Construit le contenu texte de la fiche pédagogique."""
-    fiche = f"""FICHE DE CONTINUITÉ PÉDAGOGIQUE
+    return f"""FICHE DE CONTINUITÉ PÉDAGOGIQUE
 
 École : {ecole}
 Classe concernée : {classe}
@@ -102,18 +96,11 @@ Message / éléments de communication aux familles :
 {communication_familles}
 
 """
-    return fiche
 
 
-# --- Outils pour la bibliothèque de PDF par compétence ---
+# -------------------- PDF : utilitaires --------------------
 
 def slugify_filename(value: str) -> str:
-    """
-    Transforme un texte libre (compétence) en nom de fichier safe :
-    - supprime les accents,
-    - remplace les espaces par des underscores,
-    - enlève les caractères spéciaux.
-    """
     value = str(value)
     value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     value = re.sub(r"[^\w\s-]", "", value).strip().lower()
@@ -121,108 +108,70 @@ def slugify_filename(value: str) -> str:
     return value
 
 
-def get_pdf_from_library(competence: str):
-    """
-    Cherche un PDF dans le dossier PDF_LIBRARY_DIR correspondant à la compétence.
-    Si trouvé -> renvoie les bytes.
-    Sinon -> renvoie None (on passera à la génération d'un PDF d'exemple).
-    """
-    if not competence:
-        return None
-
-    safe_name = slugify_filename(competence)
-    os.makedirs(PDF_LIBRARY_DIR, exist_ok=True)  # garantit que le dossier existe
-
-    candidate_path = os.path.join(PDF_LIBRARY_DIR, f"{safe_name}.pdf")
-
-    if os.path.exists(candidate_path):
-        with open(candidate_path, "rb") as f:
-            return f.read()
-
-    return None
+def ensure_dirs():
+    os.makedirs(PDF_COMPETENCES_DIR, exist_ok=True)
+    os.makedirs(PDF_CORRECTION_DIR, exist_ok=True)
 
 
-# --- Outils texte -> PDF (mise en page propre) ---
-
-def wrap_text_to_width(text, font="Helvetica", font_size=11):
-    """
-    Coupe automatiquement les lignes trop longues selon la largeur autorisée.
-    Retourne une liste de lignes prêtes à être écrites.
-    """
+def wrap_text_to_width(text: str, font_size: int = 11):
     lines = []
     for paragraph in text.split("\n"):
         if paragraph.strip() == "":
-            lines.append("")  # ligne vide
+            lines.append("")
             continue
-
-        # Estimation du nombre max de caractères par ligne (approx mais efficace)
         max_chars = int(TEXT_WIDTH / (font_size * 0.55))
         wrapped = textwrap.wrap(paragraph, width=max_chars)
-        if not wrapped:
-            lines.append("")
-        else:
-            lines.extend(wrapped)
-
+        lines.extend(wrapped if wrapped else [""])
     return lines
 
 
-def draw_logo_top_right(c):
-    """
-    Dessine le logo en haut à droite de la page PDF si le fichier existe.
-    """
+def draw_logo_top_right(c: canvas.Canvas):
     if not os.path.exists(LOGO_PATH):
         return
-
     try:
         logo = ImageReader(LOGO_PATH)
-        # Taille du logo (en points)
-        logo_width = 90
-        logo_height = 60
-        x = PAGE_WIDTH - RIGHT_MARGIN - logo_width
-        y = PAGE_HEIGHT - TOP_MARGIN - logo_height + 20  # un peu plus haut
-        c.drawImage(logo, x, y, width=logo_width, height=logo_height, mask='auto')
+        logo_w = 90
+        logo_h = 60
+        x = PAGE_WIDTH - RIGHT_MARGIN - logo_w
+        y = PAGE_HEIGHT - TOP_MARGIN - logo_h + 20
+        c.drawImage(logo, x, y, width=logo_w, height=logo_h, mask="auto")
     except Exception:
-        # Si problème de lecture du logo, on ne bloque pas la génération du PDF
         pass
 
 
-def build_example_pdf(fiche_texte: str, competence: str = None) -> bytes:
+def build_example_pdf(title: str, fiche_texte: str, competence: str | None = None) -> bytes:
     """
-    Génère un PDF d'exemple propre, paginé, avec retours à la ligne
-    et logo en haut à droite.
+    PDF fallback (bien mis en page + logo) si un PDF de bibliothèque manque.
     """
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
 
-    # Première page : logo en haut à droite
     draw_logo_top_right(c)
-
     y = PAGE_HEIGHT - TOP_MARGIN - 10
 
-    # --- TITRE ---
+    # Titre
+    c.setFont("Helvetica-Bold", 14)
+    for line in wrap_text_to_width(title, font_size=14):
+        c.drawString(LEFT_MARGIN, y, line)
+        y -= LINE_HEIGHT
+    y -= LINE_HEIGHT
+
+    # Sous-titre compétence
     if competence:
-        c.setFont("Helvetica-Bold", 14)
-        title_lines = wrap_text_to_width(f"Compétence : {competence}", font_size=14)
-        for line in title_lines:
+        c.setFont("Helvetica-Bold", 12)
+        for line in wrap_text_to_width(f"Compétence : {competence}", font_size=12):
             c.drawString(LEFT_MARGIN, y, line)
             y -= LINE_HEIGHT
         y -= LINE_HEIGHT
-    else:
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(LEFT_MARGIN, y, "Fiche de continuité pédagogique")
-        y -= LINE_HEIGHT * 2
 
-    # --- TEXTE PRINCIPAL ---
+    # Corps
     c.setFont("Helvetica", 11)
-
-    for line in wrap_text_to_width(fiche_texte):
+    for line in wrap_text_to_width(fiche_texte, font_size=11):
         if y < BOTTOM_MARGIN:
-            # Nouvelle page : logo + reset Y
             c.showPage()
             draw_logo_top_right(c)
             c.setFont("Helvetica", 11)
             y = PAGE_HEIGHT - TOP_MARGIN - 10
-
         c.drawString(LEFT_MARGIN, y, line)
         y -= LINE_HEIGHT
 
@@ -232,64 +181,74 @@ def build_example_pdf(fiche_texte: str, competence: str = None) -> bytes:
     return pdf
 
 
-def build_pdf_for_competence(competence: str, fiche_texte: str) -> bytes:
+def read_pdf_if_exists(directory: str, competence: str) -> bytes | None:
     """
-    1) Cherche un PDF dans la bibliothèque `pdf_competences`
-    2) Sinon génère un PDF d’exemple (correctement mis en page + logo)
+    Cherche un PDF nommé comme le slug de la compétence dans le dossier donné.
+    Exemple : pdf_competences/lire_un_texte_court.pdf
     """
-    if competence:
-        pdf_from_lib = get_pdf_from_library(competence)
-        if pdf_from_lib:
-            # On suppose que les PDF de la bibliothèque ont déjà leur propre mise en forme
-            return pdf_from_lib
+    if not competence:
+        return None
 
-    # Fallback : PDF avec mise en page + logo
-    return build_example_pdf(fiche_texte, competence)
+    ensure_dirs()
+    safe = slugify_filename(competence)
+    path = os.path.join(directory, f"{safe}.pdf")
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            return f.read()
+    return None
 
 
-# --- Mise en page générale Streamlit ---
+def get_exercice_pdf(competence: str, fiche_texte: str) -> tuple[bytes, bool]:
+    """
+    Renvoie (pdf_bytes, found_in_library)
+    """
+    pdf = read_pdf_if_exists(PDF_COMPETENCES_DIR, competence)
+    if pdf is not None:
+        return pdf, True
+    # fallback
+    return build_example_pdf("Fiche d'exercices (exemple)", fiche_texte, competence), False
 
-st.set_page_config(
-    page_title="Continuité pédagogique - Absence enseignant",
-    layout="wide",
-)
+
+def get_correction_pdf(competence: str, fiche_texte: str) -> tuple[bytes, bool]:
+    """
+    Renvoie (pdf_bytes, found_in_library)
+    """
+    pdf = read_pdf_if_exists(PDF_CORRECTION_DIR, competence)
+    if pdf is not None:
+        return pdf, True
+    # fallback
+    return build_example_pdf("Fiche de corrections (exemple)", fiche_texte, competence), False
+
+
+# -------------------- Streamlit UI --------------------
+
+st.set_page_config(page_title="Continuité pédagogique - Absence enseignant", layout="wide")
 
 # Bandeau haut : titre à gauche / logo à droite
 top_col1, top_col2 = st.columns([4, 1])
-
 with top_col1:
     st.title("🧑‍🏫 Continuité pédagogique en cas d'absence d'un enseignant")
-
 with top_col2:
     if os.path.exists(LOGO_PATH):
-        st.image(LOGO_PATH, width=160)  # Ajuste la taille si nécessaire
-    else:
-        st.write("")  # pas de logo si fichier absent
+        st.image(LOGO_PATH, width=160)
 
 st.markdown(
     """
 Cette application accompagne le directeur (ou un parent référent) en **3 étapes** :
 
-1. **Mise en œuvre** : informations pratiques et organisation.  
-2. **Contenu** : choix des compétences et des activités.  
-3. **Communication** : message aux familles / à l’équipe.
+1. **Mise en œuvre** : informations pratiques et organisation  
+2. **Contenu** : choix des compétences et des activités  
+3. **Communication** : message aux familles / à l’équipe  
 
 Sélectionne d’abord la **durée de l’absence** :
 """
 )
 
-duree_type = st.radio(
-    "Durée de l’absence",
-    ["1 à 5 jours", "Plus de 5 jours"],
-    horizontal=True,
-)
-
+duree_type = st.radio("Durée de l’absence", ["1 à 5 jours", "Plus de 5 jours"], horizontal=True)
 st.divider()
 
-# --- Infos générales communes ---
-
+# Infos générales
 st.subheader("Informations générales")
-
 col1, col2, col3 = st.columns(3)
 
 with col1:
@@ -304,75 +263,51 @@ with col3:
     try:
         classes_disponibles = load_class_list()
     except Exception as e:
-        st.error(f"Erreur lors du chargement des classes depuis {EXCEL_PATH} : {e}")
+        st.error(f"Erreur chargement classes depuis {EXCEL_PATH} : {e}")
         classes_disponibles = []
     classe = st.selectbox("Classe concernée", classes_disponibles)
 
-
 st.divider()
 
-# ----------------- CAS 1 : ABSENCE COURTE (1 à 5 jours) -----------------
-
+# ----------------- ABSENCE COURTE -----------------
 if duree_type == "1 à 5 jours":
     st.header("Absence de 1 à 5 jours : répartition des élèves")
 
-    st.markdown(
-        """
-Pour une absence courte, le protocole prévoit généralement une **répartition des élèves dans les autres classes** 
-en s’appuyant sur un document de référence (PDF de protocole de répartition).
-"""
-    )
-
-    # Étape 1 - Mise en œuvre
     st.subheader("Étape 1 • Mise en œuvre / Organisation")
-
-    organisation_courte = st.text_area(
-        "Comment les élèves de la classe absente vont-ils être répartis ? \
-(par niveau, par groupes, par demi-journées, etc.)",
+    organisation = st.text_area(
+        "Répartition des élèves (niveau, groupes, demi-journées, etc.)",
+        height=120,
+    )
+    logistique = st.text_area(
+        "Logistique / points de vigilance (PAI, cantine, services, matériel…)",
         height=120,
     )
 
-    logistique_courte = st.text_area(
-        "Logistique / points de vigilance \
-(accueil, cantine, PAI, APC, services, corrections…)",
-        height=120,
-    )
-
-    # Protocole PDF à télécharger
     st.markdown("### Protocole de répartition entre les classes")
-
     try:
         with open(PROTOCOLE_PDF_PATH, "rb") as f:
-            pdf_bytes_protocole = f.read()
+            protocole_bytes = f.read()
         st.download_button(
             "📄 Télécharger le protocole de répartition (PDF)",
-            data=pdf_bytes_protocole,
+            data=protocole_bytes,
             file_name="Protocole_repartition.pdf",
             mime="application/pdf",
-        )
-        st.caption(
-            "Le fichier PDF de protocole doit s'appeler `Protocole_repartition.pdf` "
-            "dans le même dossier que `app.py`."
         )
     except FileNotFoundError:
         st.warning(
             f"Le fichier `{PROTOCOLE_PDF_PATH}` est introuvable. "
-            "Place-le dans le même dossier que `app.py` ou modifie PROTOCOLE_PDF_PATH."
+            "Place-le à la racine du projet (même dossier que app.py)."
         )
 
-    # Étape 2 - Contenu (consolidation / révisions)
     st.subheader("Étape 2 • Contenu proposé aux élèves")
-
-    contenu_courte = st.text_area(
-        "Activités prévues (consolidation, révisions, lecture, problèmes, production d'écrits, etc.)",
+    activites = st.text_area(
+        "Activités prévues (consolidation, révisions, lecture, problèmes...)",
         height=140,
     )
 
-    # Étape 3 - Communication
     st.subheader("Étape 3 • Communication")
-
-    message_familles_courte = st.text_area(
-        "Message aux familles ou à l’ENT (modèle) :",
+    communication = st.text_area(
+        "Message aux familles (modèle) :",
         value=(
             "Madame, Monsieur,\n\n"
             f"L’enseignant(e) de la classe {classe} est absent(e) du {date_debut} au {date_fin}. "
@@ -383,9 +318,7 @@ en s’appuyant sur un document de référence (PDF de protocole de répartition
         height=160,
     )
 
-    # Génération de la fiche (texte + PDF générique, pas lié à une compétence)
     st.subheader("Récapitulatif")
-
     fiche_texte = build_fiche_text(
         ecole=ecole,
         classe=classe,
@@ -396,17 +329,16 @@ en s’appuyant sur un document de référence (PDF de protocole de répartition
         domaine="(non spécifié – absence courte)",
         sous_domaine="",
         competence="",
-        activites=contenu_courte,
-        organisation=organisation_courte,
-        logistique=logistique_courte,
-        communication_familles=message_familles_courte,
+        activites=activites,
+        organisation=organisation,
+        logistique=logistique,
+        communication_familles=communication,
     )
 
     st.text_area("Prévisualisation de la fiche", fiche_texte, height=300)
 
-    # Ici pas de compétence -> PDF d'exemple générique (avec logo)
-    pdf_bytes = build_pdf_for_competence(None, fiche_texte)
-
+    # PDF unique (fallback généré)
+    pdf_bytes = build_example_pdf("Fiche de continuité (absence courte)", fiche_texte)
     st.download_button(
         "💾 Télécharger la fiche (PDF)",
         data=pdf_bytes,
@@ -414,38 +346,30 @@ en s’appuyant sur un document de référence (PDF de protocole de répartition
         mime="application/pdf",
     )
 
-# ----------------- CAS 2 : ABSENCE LONGUE (>5 jours) -----------------
-
+# ----------------- ABSENCE LONGUE -----------------
 else:
-    st.header("Absence de plus de 5 jours : fiche de travail par compétences")
+    st.header("Absence de plus de 5 jours : exercices + corrections par compétence")
 
     st.markdown(
-        """
-Pour une absence longue, on s’appuie sur le fichier **PCP.xlsx** pour choisir :
+        f"""
+**Bibliothèques attendues :**
+- Exercices : `{PDF_COMPETENCES_DIR}/<competence>.pdf`
+- Corrections : `{PDF_CORRECTION_DIR}/<competence>.pdf`
 
-- la **classe**,
-- le **domaine**,
-- le **sous-domaine**,
-- puis la **compétence** actuellement travaillée.
-
-👉 Le PDF généré doit, à terme, s'appuyer sur une **bibliothèque de PDF par compétence**  
-(dossier `pdf_competences/`).  
-Tant que cette bibliothèque n’est pas remplie, l’application génère un **PDF d’exemple** correspondant à la compétence (avec le logo en haut à droite).
+Le nom de fichier doit correspondre au *slug* de la compétence (accents supprimés, espaces remplacés par `_`).
 """
     )
 
-    # Chargement des compétences pour la classe choisie
     if classe:
         try:
             df_comp = load_competences_for_class(classe)
         except Exception as e:
-            st.error(f"Erreur lors du chargement des compétences pour {classe} : {e}")
+            st.error(f"Erreur chargement compétences pour {classe} : {e}")
             df_comp = None
     else:
         df_comp = None
 
     if df_comp is not None and not df_comp.empty:
-        # Filtrage par domaine / sous-domaine
         st.subheader("Étape 2 • Choix de la compétence")
 
         domaines = sorted(df_comp["Domaine"].dropna().unique())
@@ -459,7 +383,7 @@ Tant que cette bibliothèque n’est pas remplie, l’application génère un **
         competences = comp_df["Compétence"].dropna().tolist()
         competence = st.selectbox("Compétence travaillée", competences)
 
-        # Activité proposée éventuellement présente dans le fichier
+        # activité proposée
         activite_proposee = ""
         if competence:
             ligne = comp_df[comp_df["Compétence"] == competence]
@@ -467,48 +391,38 @@ Tant que cette bibliothèque n’est pas remplie, l’application génère un **
                 activite_proposee = str(ligne["Activité proposée"].iloc[0] or "")
 
         st.markdown("### Activités prévues")
-
         activites = st.text_area(
-            "Décrire les activités prévues pour cette compétence "
-            "(tu peux partir de la colonne 'Activité proposée' si elle est renseignée) :",
+            "Décrire / compléter les activités prévues (base Excel si renseignée) :",
             value=activite_proposee,
             height=160,
         )
 
-        # Étape 1 & 3 : organisation + communication
         st.subheader("Étape 1 • Mise en œuvre / Organisation")
-
-        organisation_longue = st.text_area(
-            "Organisation de la continuité pédagogique \
-(groupes, plan de travail, cahier de texte, supports envoyés, etc.)",
+        organisation = st.text_area(
+            "Organisation (groupes, plan de travail, supports, ENT...)",
             height=140,
         )
-
-        logistique_longue = st.text_area(
-            "Logistique / matériel (manuels, photocopies, ENT, tablette, ressources en ligne…)",
+        logistique = st.text_area(
+            "Logistique / matériel (manuels, photocopies, ressources...)",
             height=140,
         )
 
         st.subheader("Étape 3 • Communication")
-
-        message_familles_longue = st.text_area(
+        communication = st.text_area(
             "Message aux familles (modèle) :",
             value=(
                 "Madame, Monsieur,\n\n"
                 f"Suite à l'absence prolongée de l’enseignant(e) de la classe {classe}, "
-                "une continuité pédagogique est mise en place du "
-                f"{date_debut} au {date_fin}. "
+                f"une continuité pédagogique est mise en place du {date_debut} au {date_fin}. "
                 "Les élèves travailleront notamment la compétence suivante :\n"
                 f"- {competence}\n\n"
-                "Vous trouverez ci-joint / dans le cahier les activités prévues.\n\n"
+                "Vous trouverez ci-joint les exercices (et éventuellement les corrections) associés.\n\n"
                 "Cordialement,\nLa direction."
             ),
             height=180,
         )
 
-        # Génération de la fiche
-        st.subheader("Fiche pédagogique générée")
-
+        st.subheader("Fiche de continuité (récap)")
         fiche_texte = build_fiche_text(
             ecole=ecole,
             classe=classe,
@@ -520,25 +434,45 @@ Tant que cette bibliothèque n’est pas remplie, l’application génère un **
             sous_domaine=sous_domaine,
             competence=competence,
             activites=activites,
-            organisation=organisation_longue,
-            logistique=logistique_longue,
-            communication_familles=message_familles_longue,
+            organisation=organisation,
+            logistique=logistique,
+            communication_familles=communication,
         )
+        st.text_area("Prévisualisation", fiche_texte, height=320)
 
-        st.text_area("Prévisualisation de la fiche", fiche_texte, height=350)
+        # Nom de fichier attendu
+        expected_ex = os.path.join(PDF_COMPETENCES_DIR, f"{slugify_filename(competence)}.pdf")
+        expected_corr = os.path.join(PDF_CORRECTION_DIR, f"{slugify_filename(competence)}.pdf")
+        st.caption(f"Nom attendu exercices : {expected_ex}")
+        st.caption(f"Nom attendu corrections : {expected_corr}")
 
-        # PDF basé sur bibliothèque si dispo, sinon exemple (avec logo)
-        pdf_bytes = build_pdf_for_competence(competence, fiche_texte)
+        # Génération / récupération des deux PDF
+        ex_pdf, ex_found = get_exercice_pdf(competence, fiche_texte)
+        corr_pdf, corr_found = get_correction_pdf(competence, fiche_texte)
 
-        st.download_button(
-            "💾 Télécharger la fiche (PDF)",
-            data=pdf_bytes,
-            file_name=f"fiche_continuite_{slugify_filename(classe)}_{slugify_filename(competence)}.pdf",
-            mime="application/pdf",
-        )
+        if not ex_found:
+            st.warning("PDF d'exercices introuvable dans la bibliothèque → un PDF d’exemple a été généré.")
+        if not corr_found:
+            st.info("PDF de correction introuvable dans la bibliothèque → un PDF d’exemple a été généré.")
+
+        # Téléchargements séparés
+        c1, c2 = st.columns(2)
+        with c1:
+            st.download_button(
+                "📄 Télécharger le PDF d’exercices",
+                data=ex_pdf,
+                file_name=f"exercices_{slugify_filename(classe)}_{slugify_filename(competence)}.pdf",
+                mime="application/pdf",
+            )
+        with c2:
+            st.download_button(
+                "✅ Télécharger le PDF avec corrections",
+                data=corr_pdf,
+                file_name=f"corrections_{slugify_filename(classe)}_{slugify_filename(competence)}.pdf",
+                mime="application/pdf",
+            )
 
     else:
         st.warning(
-            "Impossible de charger les compétences pour cette classe. "
-            f"Vérifie le fichier {EXCEL_PATH} et le nom des onglets."
+            f"Impossible de charger les compétences pour cette classe. Vérifie `{EXCEL_PATH}` et le nom des onglets."
         )
