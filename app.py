@@ -20,8 +20,7 @@ LOGO_PATH = "logo_academie_versailles.png"
 PDF_COMPETENCES_DIR = "pdf_competences"  # PDF exercices
 PDF_CORRECTION_DIR = "pdf_correction"    # PDF corrections
 
-
-# --- Constantes de mise en page PDF ---
+# --- Constantes de mise en page PDF (fallback) ---
 PAGE_WIDTH, PAGE_HEIGHT = A4
 LEFT_MARGIN = 40
 RIGHT_MARGIN = 40
@@ -31,7 +30,9 @@ LINE_HEIGHT = 15
 TEXT_WIDTH = PAGE_WIDTH - LEFT_MARGIN - RIGHT_MARGIN
 
 
-# -------------------- Excel --------------------
+# =========================
+# Excel
+# =========================
 
 @st.cache_data
 def load_class_list():
@@ -47,7 +48,9 @@ def load_competences_for_class(classe: str) -> pd.DataFrame:
     return df[expected_cols]
 
 
-# -------------------- Fiche texte --------------------
+# =========================
+# Fiche texte (récap)
+# =========================
 
 def build_fiche_text(
     ecole,
@@ -98,9 +101,17 @@ Message / éléments de communication aux familles :
 """
 
 
-# -------------------- PDF : utilitaires --------------------
+# =========================
+# PDF : utilitaires
+# =========================
 
 def slugify_filename(value: str) -> str:
+    """
+    Normalise un texte en 'slug' :
+    - supprime accents
+    - garde alphanum + underscore
+    - espaces -> _
+    """
     value = str(value)
     value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     value = re.sub(r"[^\w\s-]", "", value).strip().lower()
@@ -114,6 +125,9 @@ def ensure_dirs():
 
 
 def wrap_text_to_width(text: str, font_size: int = 11):
+    """
+    Wrap approximatif mais efficace pour éviter de dépasser la largeur.
+    """
     lines = []
     for paragraph in text.split("\n"):
         if paragraph.strip() == "":
@@ -126,6 +140,9 @@ def wrap_text_to_width(text: str, font_size: int = 11):
 
 
 def draw_logo_top_right(c: canvas.Canvas):
+    """
+    Dessine le logo en haut à droite (fallback PDF) si présent.
+    """
     if not os.path.exists(LOGO_PATH):
         return
     try:
@@ -181,46 +198,80 @@ def build_example_pdf(title: str, fiche_texte: str, competence: str | None = Non
     return pdf
 
 
-def read_pdf_if_exists(directory: str, competence: str) -> bytes | None:
+# =========================
+# PDF : recherche robuste dans dossiers (maj)
+# =========================
+
+@st.cache_data
+def build_pdf_index(directory: str) -> dict:
     """
-    Cherche un PDF nommé comme le slug de la compétence dans le dossier donné.
-    Exemple : pdf_competences/lire_un_texte_court.pdf
+    Indexe tous les PDFs d'un dossier :
+    {slug(nom_de_fichier_sans_extension) -> nom_de_fichier_original}
+    Accepte .pdf, .PDF, etc.
+    """
+    if not os.path.exists(directory):
+        return {}
+
+    index = {}
+    for fn in os.listdir(directory):
+        if not fn.lower().endswith(".pdf"):
+            continue
+        base = os.path.splitext(fn)[0]
+        index[slugify_filename(base)] = fn
+    return index
+
+
+def read_pdf_by_competence(directory: str, competence: str) -> tuple[bytes | None, str | None]:
+    """
+    Recherche un PDF dans `directory` correspondant à la compétence via un index.
+    Retourne (pdf_bytes, filename_found).
     """
     if not competence:
-        return None
+        return None, None
 
     ensure_dirs()
-    safe = slugify_filename(competence)
-    path = os.path.join(directory, f"{safe}.pdf")
-    if os.path.exists(path):
+    idx = build_pdf_index(directory)
+    wanted = slugify_filename(competence)
+
+    # 1) Match exact sur slug
+    if wanted in idx:
+        path = os.path.join(directory, idx[wanted])
         with open(path, "rb") as f:
-            return f.read()
-    return None
+            return f.read(), idx[wanted]
+
+    # 2) Match "souple" : utile si tes fichiers ont suffixes (_v1, _exercices, etc.)
+    for slug_name, real_fn in idx.items():
+        if wanted in slug_name or slug_name in wanted:
+            path = os.path.join(directory, real_fn)
+            with open(path, "rb") as f:
+                return f.read(), real_fn
+
+    return None, None
 
 
-def get_exercice_pdf(competence: str, fiche_texte: str) -> tuple[bytes, bool]:
+def get_exercice_pdf(competence: str, fiche_texte: str) -> tuple[bytes, bool, str | None]:
     """
-    Renvoie (pdf_bytes, found_in_library)
+    Renvoie (pdf_bytes, found, filename_found)
     """
-    pdf = read_pdf_if_exists(PDF_COMPETENCES_DIR, competence)
+    pdf, found_name = read_pdf_by_competence(PDF_COMPETENCES_DIR, competence)
     if pdf is not None:
-        return pdf, True
-    # fallback
-    return build_example_pdf("Fiche d'exercices (exemple)", fiche_texte, competence), False
+        return pdf, True, found_name
+    return build_example_pdf("Fiche d'exercices (exemple)", fiche_texte, competence), False, None
 
 
-def get_correction_pdf(competence: str, fiche_texte: str) -> tuple[bytes, bool]:
+def get_correction_pdf(competence: str, fiche_texte: str) -> tuple[bytes, bool, str | None]:
     """
-    Renvoie (pdf_bytes, found_in_library)
+    Renvoie (pdf_bytes, found, filename_found)
     """
-    pdf = read_pdf_if_exists(PDF_CORRECTION_DIR, competence)
+    pdf, found_name = read_pdf_by_competence(PDF_CORRECTION_DIR, competence)
     if pdf is not None:
-        return pdf, True
-    # fallback
-    return build_example_pdf("Fiche de corrections (exemple)", fiche_texte, competence), False
+        return pdf, True, found_name
+    return build_example_pdf("Fiche de corrections (exemple)", fiche_texte, competence), False, None
 
 
-# -------------------- Streamlit UI --------------------
+# =========================
+# Streamlit UI
+# =========================
 
 st.set_page_config(page_title="Continuité pédagogique - Absence enseignant", layout="wide")
 
@@ -353,10 +404,12 @@ else:
     st.markdown(
         f"""
 **Bibliothèques attendues :**
-- Exercices : `{PDF_COMPETENCES_DIR}/<competence>.pdf`
-- Corrections : `{PDF_CORRECTION_DIR}/<competence>.pdf`
+- Exercices : `{PDF_COMPETENCES_DIR}/...pdf`
+- Corrections : `{PDF_CORRECTION_DIR}/...pdf`
 
-Le nom de fichier doit correspondre au *slug* de la compétence (accents supprimés, espaces remplacés par `_`).
+✅ La recherche est *robuste* : elle scanne le dossier et retrouve le bon PDF même si :
+- l’extension est `.PDF` / `.pdf`
+- le fichier a un suffixe (`_v1`, `_exercices`, etc.)
 """
     )
 
@@ -440,20 +493,21 @@ Le nom de fichier doit correspondre au *slug* de la compétence (accents supprim
         )
         st.text_area("Prévisualisation", fiche_texte, height=320)
 
-        # Nom de fichier attendu
-        expected_ex = os.path.join(PDF_COMPETENCES_DIR, f"{slugify_filename(competence)}.pdf")
-        expected_corr = os.path.join(PDF_CORRECTION_DIR, f"{slugify_filename(competence)}.pdf")
-        st.caption(f"Nom attendu exercices : {expected_ex}")
-        st.caption(f"Nom attendu corrections : {expected_corr}")
+        st.caption(f"Slug compétence détecté : {slugify_filename(competence)}")
 
-        # Génération / récupération des deux PDF
-        ex_pdf, ex_found = get_exercice_pdf(competence, fiche_texte)
-        corr_pdf, corr_found = get_correction_pdf(competence, fiche_texte)
+        # Récupération des deux PDF
+        ex_pdf, ex_found, ex_name = get_exercice_pdf(competence, fiche_texte)
+        corr_pdf, corr_found, corr_name = get_correction_pdf(competence, fiche_texte)
 
-        if not ex_found:
-            st.warning("PDF d'exercices introuvable dans la bibliothèque → un PDF d’exemple a été généré.")
-        if not corr_found:
-            st.info("PDF de correction introuvable dans la bibliothèque → un PDF d’exemple a été généré.")
+        if ex_found:
+            st.success(f"✅ Exercices trouvés : {ex_name}")
+        else:
+            st.warning("PDF d'exercices introuvable → PDF d’exemple généré.")
+
+        if corr_found:
+            st.success(f"✅ Corrections trouvées : {corr_name}")
+        else:
+            st.info("PDF de correction introuvable → PDF d’exemple généré.")
 
         # Téléchargements séparés
         c1, c2 = st.columns(2)
