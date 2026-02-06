@@ -355,6 +355,12 @@ with banner_left:
         st.image(LOGO_PATH, width=LOGO_WIDTH_PX)
 with banner_right:
     st.markdown("## Plan de continuité pédagogique")
+    st.markdown(
+        "<div style='margin-top:-8px; font-size:14px; color:#555;'>"
+        "Direction des services départementaux de l’Education Nationale du Val d’Oise"
+        "</div>",
+        unsafe_allow_html=True
+    )
 
 # ----- Accueil : Diaporama (flèches) -----
 slides = build_slides_list()
@@ -378,28 +384,57 @@ else:
         "- contexte.png\n- anticipation.jpg\n- mise_en_oeuvre.png"
     )
 
-# ----- Ressources (juste sous le diaporama) -----
-st.divider()
 st.subheader("Ressources")
 
-doc_c1, doc_c2 = st.columns([2, 2])
-with doc_c1:
-    if os.path.exists(PROTOCOLE_CONTINUITE_PDF):
-        with open(PROTOCOLE_CONTINUITE_PDF, "rb") as f:
-            st.download_button(
-                "📄 Télécharger : Protocole de continuité pédagogique (PDF)",
-                data=f.read(),
-                file_name=PROTOCOLE_CONTINUITE_PDF,
-                mime="application/pdf",
-                use_container_width=True,
-            )
-    else:
-        st.warning(f"Fichier introuvable : {PROTOCOLE_CONTINUITE_PDF}")
+st.markdown(
+    """
+**AVANT LA RENTRÉE :**  
+Afin de pouvoir bénéficier d’un accompagnement optimum à la continuité pédagogique, 
+il est nécessaire, au préalable et en équipe, d’avoir désigné une personne ressource 
+et d’avoir complété le dossier comprenant :
 
-with doc_c2:
-    st.link_button("📎 Ouvrir le Genially (Plan de continuité)", GENIALLY_URL, use_container_width=True)
+- la fiche « PCP » renseignée,  
+- les programmations communes,  
+- les répartitions d’élèves.  
 
-st.divider()
+Le plan de continuité pédagogique aide le conseil des maîtres à déterminer l’organisation 
+la plus adaptée à la situation de l’école  
+(*répartition, accueil dans une classe du même niveau, regroupement*).
+"""
+)
+
+# Lien Genially (UNIQUE)
+st.link_button(
+    "🔗 Consulter le Genially – Plan de continuité pédagogique",
+    GENIALLY_URL,
+    use_container_width=True,
+)
+
+# Téléchargement du protocole PDF (si présent)
+if os.path.exists(PROTOCOLE_CONTINUITE_PDF):
+    with open(PROTOCOLE_CONTINUITE_PDF, "rb") as f:
+        st.download_button(
+            "📄 Télécharger le Protocole de continuité pédagogique (PDF)",
+            data=f.read(),
+            file_name=PROTOCOLE_CONTINUITE_PDF,
+            mime="application/pdf",
+            use_container_width=True,
+        )
+st.markdown(
+    """
+**EN CAS D’ABSENCE D’UN ENSEIGNANT :**  
+Le directeur ou la directrice de l’école est invité(e) à utiliser cet outil afin de :
+
+- suivre le protocole de continuité pédagogique pas à pas,
+- identifier la durée de l’absence et le niveau d’incidence,
+- sélectionner les compétences à travailler,
+- générer les livrets d’exercices et les supports de communication adaptés.
+
+Cet outil vise à faciliter la prise de décision collective et à garantir la continuité des apprentissages pour tous les élèves.
+"""
+)
+
+
 
 # ----- Informations générales -----
 st.subheader("Informations générales")
