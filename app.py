@@ -12,6 +12,7 @@ import glob
 import unicodedata
 import textwrap
 import hashlib
+import difflib
 from io import BytesIO
 from datetime import date
 from pathlib import Path
@@ -282,29 +283,83 @@ def build_pdf_index(directory: str) -> dict:
     return idx
 
 
+import difflib  # en haut du fichier
+
+def normalize_for_match(s: str) -> str:
+    s = str(s or "")
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = s.lower()
+    s = re.sub(r"[\(\)\[\]\{\}]", " ", s)
+    s = re.sub(r"[^\w\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 def read_pdf_by_competence(directory: str, competence: str) -> tuple[bytes | None, str | None]:
     """
-    Trouve un PDF correspondant à la compétence.
-    1) match exact sur slug
-    2) match souple (slug recherché contenu dans slug de fichier, ou inverse)
+    Cherche un pdf dans directory correspondant à competence.
+    - ne plante jamais
+    - tolère accents, majuscules, (1), espaces
+    - choisit le meilleur match
     """
-    if not competence:
+    if not competence or not os.path.exists(directory):
         return None, None
 
-    ensure_dirs()
-    idx = build_pdf_index(directory)
-    wanted = slugify_filename(competence)
+    target = normalize_for_match(competence)
 
-    if wanted in idx:
-        path = os.path.join(directory, idx[wanted])
-        with open(path, "rb") as f:
-            return f.read(), idx[wanted]
+    pdf_files = [fn for fn in os.listdir(directory) if fn.lower().endswith(".pdf")]
+    if not pdf_files:
+        return None, None
 
-    for slug_name, real_fn in idx.items():
-        if wanted in slug_name or slug_name in wanted:
-            path = os.path.join(directory, real_fn)
+    candidates = []
+    for fn in pdf_files:
+        stem = os.path.splitext(fn)[0]
+        norm = normalize_for_match(stem)
+        candidates.append((fn, norm))
+
+    # 1) exact normalisé
+    for fn, norm in candidates:
+        if norm == target:
+            path = os.path.join(directory, fn)
+            try:
+                with open(path, "rb") as f:
+                    return f.read(), fn
+            except FileNotFoundError:
+                # au cas où (rare) : on continue
+                break
+
+    # 2) contains
+    contains_hits = []
+    for fn, norm in candidates:
+        if target in norm or norm in target:
+            score = difflib.SequenceMatcher(None, target, norm).ratio()
+            contains_hits.append((score, fn))
+
+    if contains_hits:
+        contains_hits.sort(reverse=True, key=lambda x: x[0])
+        best_fn = contains_hits[0][1]
+        path = os.path.join(directory, best_fn)
+        try:
             with open(path, "rb") as f:
-                return f.read(), real_fn
+                return f.read(), best_fn
+        except FileNotFoundError:
+            pass
+
+    # 3) meilleur score global
+    scored = []
+    for fn, norm in candidates:
+        score = difflib.SequenceMatcher(None, target, norm).ratio()
+        scored.append((score, fn))
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    best_score, best_fn = scored[0]
+    if best_score >= 0.62:
+        path = os.path.join(directory, best_fn)
+        try:
+            with open(path, "rb") as f:
+                return f.read(), best_fn
+        except FileNotFoundError:
+            pass
 
     return None, None
 
