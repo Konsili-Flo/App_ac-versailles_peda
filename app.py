@@ -371,6 +371,10 @@ def read_pdf_by_competence(directory: str, competence: str) -> tuple[bytes | Non
 INCIDENCE_OPTIONS = ["Faible", "Modéré", "Élevé"]
 
 
+# =========================
+# NIVEAU D'INCIDENCE -> MESSAGE (pour affichage dans l'app)
+# =========================
+
 def message_selon_incidence(level: str) -> str:
     # ⚠️ L'incidence ne doit pas apparaître dans la fiche récap.
     if level == "Faible":
@@ -381,33 +385,51 @@ def message_selon_incidence(level: str) -> str:
 
 
 # =========================
-# MODÈLES DE COMMUNICATION
+# MODÈLES DE COMMUNICATION (1 modèle par niveau d'incidence)
 # =========================
 
-COMM_TEMPLATES = {
-    "Modèle 1 — Information simple": (
+COMM_TEMPLATES_BY_INCIDENCE = {
+    "Faible": (
         "Madame, Monsieur,\n\n"
-        "Dans le cadre du plan de continuité pédagogique, des supports de travail sont mis à disposition "
-        "afin de poursuivre les apprentissages.\n\n"
+        "Afin d’accompagner au mieux votre enfant en l’absence de son enseignant, la circonscription va déployer "
+        "un protocole pour garantir la continuité pédagogique des apprentissages.\n\n"
+        "Celui-ci sera proposé dès le {date_debut} sous la forme d’un plan de travail comprenant des activités "
+        "adaptées et progressives en lien avec les programmes officiels.\n\n"
+        "Ce plan prendra la forme d’un fichier individuel que votre enfant pourra compléter en {dispositif}.\n\n"
+        "L’équipe enseignante supervisera la bonne mise en œuvre de ce protocole et reste à votre disposition "
+        "pour toute question éventuelle.\n\n"
+        "Cordialement,"
+    ),
+    "Modéré": (
+        "Madame, Monsieur,\n\n"
+        "Dans le cadre du plan de continuité pédagogique, des supports de travail sont mis à disposition afin de "
+        "poursuivre les apprentissages en l’absence de l’enseignant.\n\n"
+        "À compter du {date_debut}, votre enfant réalisera des activités adaptées et progressives. "
+        "Le travail pourra être complété en {dispositif}.\n\n"
+        "L’équipe enseignante assurera un suivi régulier et reste à votre disposition pour toute question.\n\n"
         "Cordialement,\nLa direction."
     ),
-    "Modèle 2 — Rappel organisation (supports + retour)": (
+    "Élevé": (
         "Madame, Monsieur,\n\n"
-        "Afin d’assurer la continuité pédagogique, un livret d’exercices est transmis. "
-        "Merci de le faire réaliser régulièrement et de conserver les productions.\n\n"
-        "Cordialement,\nLa direction."
-    ),
-    "Modèle 3 — Absence prolongée (supports adaptés)": (
-        "Madame, Monsieur,\n\n"
-        "Suite à l’absence, des supports de travail sont mis à disposition afin de poursuivre les apprentissages. "
-        "Les consignes et les supports seront précisés au fur et à mesure.\n\n"
+        "En raison d’une absence prolongée, le plan de continuité pédagogique est activé afin de garantir la poursuite "
+        "des apprentissages.\n\n"
+        "Dès le {date_debut}, des supports de travail seront mis à disposition et mis à jour régulièrement. "
+        "Votre enfant pourra compléter ces activités en {dispositif}.\n\n"
+        "L’équipe enseignante coordonnera la mise en œuvre de ce protocole et restera disponible pour vous accompagner.\n\n"
         "Cordialement,\nLa direction."
     ),
 }
 
 
+def render_comm_template(template: str, date_debut, dispositif: list[str]) -> str:
+    disp = ", ".join(dispositif).strip() if dispositif else "classe de rattachement"
+    dt = date_debut.strftime("%d/%m/%Y") if date_debut else ""
+    return template.format(date_debut=dt, dispositif=disp)
+
+
+
 # =========================
-# FICHE RÉCAP (TEXTE)
+# FICHE RÉCAPITULATIVE (TEXTE)
 # =========================
 
 def build_recap_text(
@@ -537,13 +559,11 @@ else:
 
 st.markdown(
     """
-**EN CAS D’ABSENCE D’UN ENSEIGNANT :**  
-Le directeur ou la directrice de l’école est invité(e) à utiliser cet outil afin de :
+**DECLENCHEMENT :**  
+Pendant l’année scolaire, lors de l’absence non remplacée d’un professeur, cet outil vous accompagne : 
 
-- suivre le protocole de continuité pédagogique pas à pas,
-- identifier la durée de l’absence et le niveau d’incidence,
-- sélectionner les compétences à travailler,
-- générer les livrets d’exercices et les supports de communication adaptés.
+- dans la constitution du livret de ressources ;  
+- dans le choix de la communication à privilégier.  
 
 Cet outil vise à faciliter la prise de décision collective et à garantir la continuité des apprentissages pour tous les élèves.
 """
@@ -553,6 +573,14 @@ st.divider()
 
 # ----- Informations générales -----
 st.subheader("Informations générales")
+st.warning(
+    "🔒 **Important — Protection des données :**\n\n"
+    "Les informations renseignées dans cet outil ne sont pas conservées en ligne. "
+    "Aucune donnée n’est stockée ni transmise. "
+    "Les contenus générés le sont uniquement pour la session en cours."
+)
+
+
 
 livret_num = st.text_input("Numéro de livret (reporté sur les PDF)", value="")
 enseignant_absent = st.text_input("Enseignant absent", value="")
@@ -569,17 +597,16 @@ with row1[1]:
     classe = st.selectbox("Classe concernée", classes_disponibles)
 with row1[2]:
     DISPOSITIFS = [
-        "Répartition dans les autres classes",
-        "Répartition dans une classe d'un même niveau",
-        "Répartition dans une classe d'un même niveau + regroupement",
-        "Co-intervention / renfort interne",
+        "accueil dans une classe du même niveau",
+        "regroupement possible",
+        "répartition dans les autres classes",
         "Continuité à distance",
     ]
     dispositif = st.multiselect("Dispositif choisi", options=DISPOSITIFS, default=[])
 with row1[3]:
     duree_base = st.radio(
         "Durée de l'absence",
-        options=["Inférieur ou égal à 5 jours", "Supérieur à 5 jours"],
+        options=["Inférieure ou égal à 5 jours", "Supérieure à 5 jours"],
         horizontal=False,
     )
 
@@ -623,41 +650,41 @@ st.divider()
 st.subheader("Communication (modèle modifiable)")
 
 st.info(
-    "Vous pouvez insérer un modèle et/ou ajouter la suggestion liée au niveau d’incidence. "
-    "Vous pouvez aussi choisir d’inclure (ou non) ce texte dans la fiche récap."
+    "Le message ci-dessous est proposé automatiquement selon le niveau d’incidence sélectionné. "
+    "Vous pouvez le modifier si nécessaire."
 )
 
-comm_row = st.columns([2, 1, 2])
-with comm_row[0]:
-    chosen_template = st.selectbox("Choisir un modèle", options=list(COMM_TEMPLATES.keys()))
-with comm_row[1]:
-    if st.button("Insérer le modèle", use_container_width=True):
-        st.session_state["communication_text"] = COMM_TEMPLATES[chosen_template]
-with comm_row[2]:
-    if st.button("Ajouter la suggestion (niveau d'incidence)", use_container_width=True):
-        base = st.session_state.get("communication_text", "")
-        if base.strip():
-            st.session_state["communication_text"] = base.strip() + "\n\n" + incidence_msg
-        else:
-            st.session_state["communication_text"] = incidence_msg
-
-include_comm_in_recap = st.checkbox("Inclure la communication dans la fiche récap", value=True)
-
+# On initialise l'état
+if "last_incidence" not in st.session_state:
+    st.session_state.last_incidence = None
 if "communication_text" not in st.session_state:
-    st.session_state["communication_text"] = COMM_TEMPLATES[list(COMM_TEMPLATES.keys())[0]]
+    st.session_state.communication_text = ""
+
+# Si le niveau d'incidence change, on recharge le modèle correspondant
+if st.session_state.last_incidence != incidence:
+    base_template = COMM_TEMPLATES_BY_INCIDENCE.get(incidence, "")
+    st.session_state.communication_text = render_comm_template(base_template, date_debut, dispositif)
+    st.session_state.last_incidence = incidence
+
+include_comm_in_recap = st.checkbox("Inclure la communication dans la fiche récapitulative", value=True)
 
 communication = st.text_area(
     "Message aux familles / ENT",
-    value=st.session_state["communication_text"],
-    height=150,
+    value=st.session_state.communication_text,
+    height=190,
 )
 
-st.session_state["communication_text"] = communication
+# On conserve les modifications de l’utilisateur
+st.session_state.communication_text = communication
 
 st.divider()
 
 # ----- Contenu du livret : domaines + sous-domaines + compétences (mix possible) -----
 st.subheader("Contenu du livret (pour 2 jours sans remplacement)")
+st.info(
+    "Afin d’identifier les compétences travaillées durant la période précédant l’absence, "
+    "vous pouvez vous aider du cahier journal de la classe, des programmations et des guides du maître utilisés par l’enseignant."
+)
 
 if not classe:
     st.warning("Sélectionne une classe.")
@@ -701,11 +728,11 @@ df_sous["__label__"] = (
 
 labels = sorted(df_sous["__label__"].unique().tolist())
 
-if duree_base == "Inférieur ou égal à 5 jours":
-    chosen_label = st.selectbox("3) Compétence (1 seule pour ≤ 5 jours)", options=labels)
-    selected_labels = [chosen_label] if chosen_label else []
-else:
-    selected_labels = st.multiselect("3) Compétences (sélection multiple)", options=labels, default=[])
+selected_labels = st.multiselect(
+    "3) Compétence(s) (sélection multiple)",
+    options=labels,
+    default=[],
+)
 
 # Transformer les labels en tuples (dom, sous, comp) et liste de comp seules pour chercher les PDFs
 selected_triplets: list[tuple[str, str, str]] = []
@@ -718,7 +745,7 @@ for lab in selected_labels:
         selected_triplets.append((dom, sous, comp))
         selected_competences_only.append(comp)
 
-# ----- Fiche récap (toujours affichée) -----
+# ----- Fiche récapitulative(toujours affichée) -----
 comm_for_recap = communication if include_comm_in_recap else None
 recap_text = build_recap_text(
     livret_num=livret_num,
@@ -745,7 +772,10 @@ st.divider()
 # =========================
 
 st.subheader("Téléchargements")
-st.caption("💡 Conseil : téléchargez directement le livret d’exercices ET le livret de corrections pour tout avoir au même moment.")
+st.markdown(
+    "**💡 Conseil : téléchargez directement le livret d’exercices et le livret de corrections pour tout avoir au même moment.**"
+)
+
 
 if not selected_competences_only:
     st.info("Sélectionne au moins une compétence pour générer les livrets.")
