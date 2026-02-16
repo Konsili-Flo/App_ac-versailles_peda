@@ -482,6 +482,38 @@ def build_recap_text(
 
 st.set_page_config(page_title="Plan de continuité pédagogique", layout="wide")
 ensure_dirs()
+from pathlib import Path
+import base64
+
+def load_font(font_path):
+    with open(font_path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
+BASE_DIR = Path(__file__).resolve().parent
+FONT_DIR = BASE_DIR / "assets" / "fonts"
+
+marianne_regular = load_font(FONT_DIR / "Marianne-Regular.woff2")
+marianne_bold = load_font(FONT_DIR / "Marianne-Bold.woff2")
+
+st.markdown(f"""
+<style>
+@font-face {{
+    font-family: 'Marianne';
+    src: url(data:font/woff2;base64,{marianne_regular}) format('woff2');
+    font-weight: 400;
+}}
+
+@font-face {{
+    font-family: 'Marianne';
+    src: url(data:font/woff2;base64,{marianne_bold}) format('woff2');
+    font-weight: 700;
+}}
+
+html, body, [class*="css"] {{
+    font-family: 'Marianne', sans-serif !important;
+}}
+</style>
+""", unsafe_allow_html=True)
 
 # ----- Bannière -----
 banner_left, banner_right = st.columns([1, 7], vertical_alignment="center")
