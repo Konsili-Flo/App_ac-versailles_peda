@@ -376,7 +376,7 @@ INCIDENCE_OPTIONS = ["Faible", "Modéré", "Élevé"]
 # =========================
 
 def message_selon_incidence(level: str) -> str:
-    # ⚠️ L'incidence ne doit pas apparaître dans la fiche récap.
+    # ⚠️ L'incidence ne doit pas apparaître dans la fiche récapitulative.
     if level == "Faible":
         return "Information simple aux familles dans le carnet de liaison et sur l'ENT."
     if level == "Modéré":
@@ -759,15 +759,15 @@ recap_text = build_recap_text(
     communication=comm_for_recap,
 )
 
-st.subheader("Fiche récap (toujours affichée)")
+st.subheader("Fiche récapitulative (toujours affichée)")
 st.text_area("Prévisualisation", recap_text, height=240)
 
 st.divider()
 
 # =========================
 # TÉLÉCHARGEMENTS
-# - Livret d’exercices = Fiche récap + PDFs exercices
-# - Livret de corrections = Fiche récap + PDFs corrections
+# - Livret d’exercices = Fiche récapitulative + PDFs exercices
+# - Livret de corrections = Fiche récapitulative + PDFs corrections
 # - Pas de PDF "page infos" en trop
 # =========================
 
@@ -838,7 +838,7 @@ else:
         "Aucune illustration trouvée."
     )
 
-# Ordre final : Fiche récap -> Illustration -> Exercices / Corrections
+# Ordre final : Fiche récapitulative -> Illustration -> Exercices / Corrections
 livret_exercices = merge_pdfs([recap_pdf, illus_pdf] + exercices_pdfs)
 livret_corrections = merge_pdfs([recap_pdf, illus_pdf] + corrections_pdfs)
 
