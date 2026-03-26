@@ -1,4 +1,4 @@
-# app.py — Plan de continuité pédagogique (version complète, propre, à jour)
+# app.py — Plan de continuité pédagogique
 # Dépendances (requirements.txt) :
 # streamlit
 # pandas
@@ -9,10 +9,9 @@
 import os
 import re
 import glob
+import difflib
 import unicodedata
 import textwrap
-import hashlib
-import difflib
 from io import BytesIO
 from datetime import date
 from pathlib import Path
@@ -31,29 +30,23 @@ from pypdf import PdfReader, PdfWriter
 # CONFIG / FICHIERS
 # =========================
 
-EXCEL_PATH = "PCP.xlsx"
-LOGO_PATH = "logo_academie_versailles.png"
+BASE_DIR = Path(__file__).resolve().parent
 
-# PDF téléchargeable (à la racine du projet)
-PROTOCOLE_CONTINUITE_PDF = "Protocole de continuité pédagogique.pdf"
+EXCEL_PATH = BASE_DIR / "PCP.xlsx"
+LOGO_PATH = BASE_DIR / "logo_academie_versailles.png"
 
-# Bibliothèques PDF
-PDF_COMPETENCES_DIR = "pdf_competences"  # exercices
-PDF_CORRECTION_DIR = "pdf_correction"    # corrections
+PROTOCOLE_CONTINUITE_PDF = BASE_DIR / "Protocole de continuité pédagogique.pdf"
 
-# Ressource en ligne
+PDF_COMPETENCES_DIR = BASE_DIR / "pdf_competences"
+PDF_CORRECTION_DIR = BASE_DIR / "pdf_correction"
+ILLUSTRATIONS_DIR = BASE_DIR / "illustrations"
+SLIDES_DIR = BASE_DIR / "slides"
+
 GENIALLY_URL = "https://view.genially.com/693ad2fee4adee9eefd9d637/interactive-content-plan-de-continuite-pedagogique"
 
-# Images (si présentes à la racine)
-INCIDENCES_HINTS = ["incidence", "incidences", "niveau"]
-SLIDE_KEYWORDS = ["contexte", "anticipation", "mise", "oeuvre", "mise_en_oeuvre", "mise-oeuvre"]
+SLIDE_WIDTH_PX = 900
+LOGO_WIDTH_PX = 160
 
-# Tailles d’images (Streamlit : utiliser width=...)
-SLIDE_WIDTH_PX = 820
-INCIDENCE_IMG_WIDTH_PX = 520
-LOGO_WIDTH_PX = 110
-
-# PDF fallback : mise en page
 PAGE_WIDTH, PAGE_HEIGHT = A4
 LEFT_MARGIN = 40
 RIGHT_MARGIN = 40
@@ -68,8 +61,10 @@ TEXT_WIDTH = PAGE_WIDTH - LEFT_MARGIN - RIGHT_MARGIN
 # =========================
 
 def ensure_dirs():
-    os.makedirs(PDF_COMPETENCES_DIR, exist_ok=True)
-    os.makedirs(PDF_CORRECTION_DIR, exist_ok=True)
+    PDF_COMPETENCES_DIR.mkdir(parents=True, exist_ok=True)
+    PDF_CORRECTION_DIR.mkdir(parents=True, exist_ok=True)
+    ILLUSTRATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    SLIDES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def slugify_filename(value: str) -> str:
@@ -78,6 +73,16 @@ def slugify_filename(value: str) -> str:
     value = re.sub(r"[^\w\s-]", "", value).strip().lower()
     value = re.sub(r"[\s-]+", "_", value)
     return value
+
+
+def normalize_for_match(s: str) -> str:
+    s = str(s or "")
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = s.lower()
+    s = re.sub(r"[\(\)\[\]\{\}]", " ", s)
+    s = re.sub(r"[^\w\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 
 def wrap_text_to_width(text: str, font_size: int = 11):
@@ -93,10 +98,10 @@ def wrap_text_to_width(text: str, font_size: int = 11):
 
 
 def draw_logo_top_right(c: canvas.Canvas):
-    if not os.path.exists(LOGO_PATH):
+    if not LOGO_PATH.exists():
         return
     try:
-        logo = ImageReader(LOGO_PATH)
+        logo = ImageReader(str(LOGO_PATH))
         logo_w = 90
         logo_h = 60
         x = PAGE_WIDTH - RIGHT_MARGIN - logo_w
@@ -107,9 +112,6 @@ def draw_logo_top_right(c: canvas.Canvas):
 
 
 def build_text_pdf(title: str, body_text: str, subtitle: str | None = None) -> bytes:
-    """
-    Génère un PDF propre (fallback) : titres + retours à la ligne + pagination + logo.
-    """
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     draw_logo_top_right(c)
@@ -146,9 +148,6 @@ def build_text_pdf(title: str, body_text: str, subtitle: str | None = None) -> b
 
 
 def merge_pdfs(pdf_bytes_list: list[bytes]) -> bytes:
-    """
-    Fusionne une liste de PDF (bytes) en un seul PDF (bytes).
-    """
     writer = PdfWriter()
     for pdf_bytes in pdf_bytes_list:
         reader = PdfReader(BytesIO(pdf_bytes))
@@ -158,34 +157,110 @@ def merge_pdfs(pdf_bytes_list: list[bytes]) -> bytes:
     writer.write(out)
     return out.getvalue()
 
-ILLUSTRATIONS_DIR = "illustrations"
+
+def natural_key(name: str):
+    parts = re.split(r"(\d+)", name.lower())
+    key = []
+    for p in parts:
+        key.append(int(p) if p.isdigit() else p)
+    return key
+
+
+def build_slides_list() -> list[str]:
+    exts = (".png", ".jpg", ".jpeg", ".webp")
+    slides = []
+
+    if SLIDES_DIR.exists():
+        slides = [
+            str(p) for p in SLIDES_DIR.iterdir()
+            if p.is_file() and p.suffix.lower() in exts
+        ]
+        slides.sort(key=lambda p: natural_key(Path(p).name))
+        if slides:
+            return slides
+
+    root_candidates = [
+        str(p) for p in BASE_DIR.iterdir()
+        if p.is_file() and p.suffix.lower() in exts and "slide" in p.stem.lower()
+    ]
+    root_candidates.sort(key=lambda p: natural_key(Path(p).name))
+    return root_candidates
+
+
+def build_pdf_index(directory: Path) -> dict:
+    if not directory.exists():
+        return {}
+    idx = {}
+    for fn in directory.iterdir():
+        if fn.is_file() and fn.suffix.lower() == ".pdf":
+            idx[slugify_filename(fn.stem)] = fn.name
+    return idx
+
+
+def read_pdf_by_competence(directory: Path, competence: str) -> tuple[bytes | None, str | None]:
+    if not competence or not directory.exists():
+        return None, None
+
+    target = normalize_for_match(competence)
+    pdf_files = [p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"]
+    if not pdf_files:
+        return None, None
+
+    candidates = []
+    for p in pdf_files:
+        norm = normalize_for_match(p.stem)
+        candidates.append((p, norm))
+
+    for p, norm in candidates:
+        if norm == target:
+            return p.read_bytes(), p.name
+
+    contains_hits = []
+    for p, norm in candidates:
+        if target in norm or norm in target:
+            score = difflib.SequenceMatcher(None, target, norm).ratio()
+            contains_hits.append((score, p))
+
+    if contains_hits:
+        contains_hits.sort(reverse=True, key=lambda x: x[0])
+        best = contains_hits[0][1]
+        return best.read_bytes(), best.name
+
+    scored = []
+    for p, norm in candidates:
+        score = difflib.SequenceMatcher(None, target, norm).ratio()
+        scored.append((score, p))
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    best_score, best = scored[0]
+    if best_score >= 0.62:
+        return best.read_bytes(), best.name
+
+    return None, None
+
 
 def list_illustrations() -> list[str]:
     exts = (".png", ".jpg", ".jpeg", ".webp", ".pdf")
-    if not os.path.exists(ILLUSTRATIONS_DIR):
+    if not ILLUSTRATIONS_DIR.exists():
         return []
     files = []
-    for fn in os.listdir(ILLUSTRATIONS_DIR):
-        if fn.lower().endswith(exts):
-            files.append(os.path.join(ILLUSTRATIONS_DIR, fn))
-    return sorted(files)
+    for fn in ILLUSTRATIONS_DIR.iterdir():
+        if fn.is_file() and fn.suffix.lower() in exts:
+            files.append(str(fn))
+    files.sort(key=lambda p: natural_key(Path(p).name))
+    return files
 
 
-def pick_illustration_for_livret(illustrations: list[str], livret_num: str, fallback_seed: str = "") -> str | None:
-    """
-    Même numéro de livret = même illustration.
-    Si numéro vide, fallback sur classe.
-    """
-    if not illustrations:
+def pick_illustration_for_livret_number(illustrations: list[str], livret_num: str) -> str | None:
+    if not livret_num:
         return None
 
-    seed = (livret_num or "").strip()
-    if not seed:
-        seed = (fallback_seed or "default").strip()
-
-    h = hashlib.md5(seed.encode("utf-8")).hexdigest()
-    idx = int(h, 16) % len(illustrations)
-    return illustrations[idx]
+    key = str(livret_num).strip()
+    for path in illustrations:
+        base = Path(path)
+        if base.stem.strip() == key:
+            return path
+    return None
 
 
 def build_illustration_pdf(image_path: str) -> bytes:
@@ -196,7 +271,6 @@ def build_illustration_pdf(image_path: str) -> bytes:
         img = ImageReader(image_path)
         iw, ih = img.getSize()
 
-        # zone utilisable
         x0, y0 = 20, 20
         w0, h0 = PAGE_WIDTH - 40, PAGE_HEIGHT - 40
 
@@ -222,27 +296,38 @@ def build_illustration_pdf(image_path: str) -> bytes:
     return pdf
 
 
-def find_first_image_by_hints(hints: list[str]) -> str | None:
-    exts = (".png", ".jpg", ".jpeg", ".webp")
-    for fn in sorted(glob.glob("*")):
-        low = fn.lower()
-        if low.endswith(exts) and any(h in low for h in hints):
-            return fn
-    return None
+def render_comm_template(template: str, date_debut_value, dispositif: list[str]) -> str:
+    disp = ", ".join(dispositif).strip() if dispositif else "classe de rattachement"
+    dt = date_debut_value.strftime("%d/%m/%Y") if date_debut_value else ""
+    return template.format(date_debut=dt, dispositif=disp)
 
 
-def build_slides_list() -> list[str]:
-    """
-    Diaporama : images contenant des mots-clés (contexte/anticipation/mise en oeuvre).
-    """
-    exts = (".png", ".jpg", ".jpeg", ".webp")
-    images = [f for f in glob.glob("*") if f.lower().endswith(exts)]
-    slides = []
-    for f in images:
-        low = f.lower()
-        if any(k in low for k in SLIDE_KEYWORDS):
-            slides.append(f)
-    return sorted(slides)
+def make_unique_labels(df: pd.DataFrame) -> tuple[list[str], dict]:
+    counts = {}
+    labels = []
+    mapping = {}
+
+    for _, row in df.iterrows():
+        competence = str(row["Compétence"]).strip()
+        domaine = str(row["Domaine"]).strip()
+        sous = str(row["Sous domaine"]).strip()
+
+        counts[competence] = counts.get(competence, 0) + 1
+        display = competence if counts[competence] == 1 else f"{competence} ({counts[competence]})"
+
+        labels.append(display)
+        mapping[display] = (domaine, sous, competence)
+
+    return labels, mapping
+
+
+def badge(text: str, color: str):
+    st.markdown(
+        f"<span style='display:inline-block;padding:6px 10px;margin:4px;"
+        f"border-radius:12px;background:{color};color:white;font-size:12px;'>"
+        f"{text}</span>",
+        unsafe_allow_html=True,
+    )
 
 
 # =========================
@@ -264,172 +349,24 @@ def load_competences_for_class(classe: str) -> pd.DataFrame:
 
 
 # =========================
-# RECHERCHE PDF (ROBUSTE CLOUD)
+# COMMUNICATION
 # =========================
 
-@st.cache_data
-def build_pdf_index(directory: str) -> dict:
-    """
-    Indexe tous les PDFs du dossier :
-    {slug(nom_sans_extension) -> nom_fichier_original}
-    """
-    if not os.path.exists(directory):
-        return {}
-    idx = {}
-    for fn in os.listdir(directory):
-        if fn.lower().endswith(".pdf"):
-            base = os.path.splitext(fn)[0]
-            idx[slugify_filename(base)] = fn
-    return idx
-
-
-import difflib  # en haut du fichier
-
-def normalize_for_match(s: str) -> str:
-    s = str(s or "")
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
-    s = s.lower()
-    s = re.sub(r"[\(\)\[\]\{\}]", " ", s)
-    s = re.sub(r"[^\w\s]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-def read_pdf_by_competence(directory: str, competence: str) -> tuple[bytes | None, str | None]:
-    """
-    Cherche un pdf dans directory correspondant à competence.
-    - ne plante jamais
-    - tolère accents, majuscules, (1), espaces
-    - choisit le meilleur match
-    """
-    if not competence or not os.path.exists(directory):
-        return None, None
-
-    target = normalize_for_match(competence)
-
-    pdf_files = [fn for fn in os.listdir(directory) if fn.lower().endswith(".pdf")]
-    if not pdf_files:
-        return None, None
-
-    candidates = []
-    for fn in pdf_files:
-        stem = os.path.splitext(fn)[0]
-        norm = normalize_for_match(stem)
-        candidates.append((fn, norm))
-
-    # 1) exact normalisé
-    for fn, norm in candidates:
-        if norm == target:
-            path = os.path.join(directory, fn)
-            try:
-                with open(path, "rb") as f:
-                    return f.read(), fn
-            except FileNotFoundError:
-                # au cas où (rare) : on continue
-                break
-
-    # 2) contains
-    contains_hits = []
-    for fn, norm in candidates:
-        if target in norm or norm in target:
-            score = difflib.SequenceMatcher(None, target, norm).ratio()
-            contains_hits.append((score, fn))
-
-    if contains_hits:
-        contains_hits.sort(reverse=True, key=lambda x: x[0])
-        best_fn = contains_hits[0][1]
-        path = os.path.join(directory, best_fn)
-        try:
-            with open(path, "rb") as f:
-                return f.read(), best_fn
-        except FileNotFoundError:
-            pass
-
-    # 3) meilleur score global
-    scored = []
-    for fn, norm in candidates:
-        score = difflib.SequenceMatcher(None, target, norm).ratio()
-        scored.append((score, fn))
-    scored.sort(reverse=True, key=lambda x: x[0])
-
-    best_score, best_fn = scored[0]
-    if best_score >= 0.62:
-        path = os.path.join(directory, best_fn)
-        try:
-            with open(path, "rb") as f:
-                return f.read(), best_fn
-        except FileNotFoundError:
-            pass
-
-    return None, None
+DEFAULT_COMM_TEMPLATE = (
+    "Madame, Monsieur,\n\n"
+    "Afin d’accompagner au mieux votre enfant en l’absence de son enseignant, la circonscription va déployer "
+    "un protocole pour garantir la continuité pédagogique des apprentissages.\n\n"
+    "Celui-ci sera proposé dès le {date_debut} sous la forme d’un plan de travail comprenant des activités "
+    "adaptées et progressives en lien avec les programmes officiels.\n\n"
+    "Ce plan prendra la forme d’un fichier individuel que votre enfant pourra compléter en {dispositif}.\n\n"
+    "L’équipe enseignante supervisera la bonne mise en œuvre de ce protocole et reste à votre disposition "
+    "pour toute question éventuelle.\n\n"
+    "Cordialement,"
+)
 
 
 # =========================
-# NIVEAU D'INCIDENCE (3 niveaux)
-# =========================
-
-INCIDENCE_OPTIONS = ["Faible", "Modéré", "Élevé"]
-
-
-# =========================
-# NIVEAU D'INCIDENCE -> MESSAGE (pour affichage dans l'app)
-# =========================
-
-def message_selon_incidence(level: str) -> str:
-    # ⚠️ L'incidence ne doit pas apparaître dans la fiche récapitulative.
-    if level == "Faible":
-        return "Information simple aux familles dans le carnet de liaison et sur l'ENT."
-    if level == "Modéré":
-        return "Rencontre de l'équipe pédagogique avec une délégation de parents."
-    return "Rencontre entre l'équipe de circonscription et les représentants des parents élus."
-
-
-# =========================
-# MODÈLES DE COMMUNICATION (1 modèle par niveau d'incidence)
-# =========================
-
-COMM_TEMPLATES_BY_INCIDENCE = {
-    "Faible": (
-        "Madame, Monsieur,\n\n"
-        "Afin d’accompagner au mieux votre enfant en l’absence de son enseignant, la circonscription va déployer "
-        "un protocole pour garantir la continuité pédagogique des apprentissages.\n\n"
-        "Celui-ci sera proposé dès le {date_debut} sous la forme d’un plan de travail comprenant des activités "
-        "adaptées et progressives en lien avec les programmes officiels.\n\n"
-        "Ce plan prendra la forme d’un fichier individuel que votre enfant pourra compléter en {dispositif}.\n\n"
-        "L’équipe enseignante supervisera la bonne mise en œuvre de ce protocole et reste à votre disposition "
-        "pour toute question éventuelle.\n\n"
-        "Cordialement,"
-    ),
-    "Modéré": (
-        "Madame, Monsieur,\n\n"
-        "Dans le cadre du plan de continuité pédagogique, des supports de travail sont mis à disposition afin de "
-        "poursuivre les apprentissages en l’absence de l’enseignant.\n\n"
-        "À compter du {date_debut}, votre enfant réalisera des activités adaptées et progressives. "
-        "Le travail pourra être complété en {dispositif}.\n\n"
-        "L’équipe enseignante assurera un suivi régulier et reste à votre disposition pour toute question.\n\n"
-        "Cordialement,\nLa direction."
-    ),
-    "Élevé": (
-        "Madame, Monsieur,\n\n"
-        "En raison d’une absence prolongée, le plan de continuité pédagogique est activé afin de garantir la poursuite "
-        "des apprentissages.\n\n"
-        "Dès le {date_debut}, des supports de travail seront mis à disposition et mis à jour régulièrement. "
-        "Votre enfant pourra compléter ces activités en {dispositif}.\n\n"
-        "L’équipe enseignante coordonnera la mise en œuvre de ce protocole et restera disponible pour vous accompagner.\n\n"
-        "Cordialement,\nLa direction."
-    ),
-}
-
-
-def render_comm_template(template: str, date_debut, dispositif: list[str]) -> str:
-    disp = ", ".join(dispositif).strip() if dispositif else "classe de rattachement"
-    dt = date_debut.strftime("%d/%m/%Y") if date_debut else ""
-    return template.format(date_debut=dt, dispositif=disp)
-
-
-
-# =========================
-# FICHE RÉCAPITULATIVE (TEXTE)
+# RÉCAP
 # =========================
 
 def build_recap_text(
@@ -438,14 +375,10 @@ def build_recap_text(
     classe: str,
     enseignant_absent: str,
     dispositif: list[str],
-    duree_label: str,
     periode_label: str,
     competences: list[tuple[str, str, str]],
     communication: str | None,
 ) -> str:
-    """
-    competences : liste de tuples (Domaine, Sous-domaine, Compétence)
-    """
     lines = []
     lines.append("FICHE RÉCAPITULATIVE — PLAN DE CONTINUITÉ PÉDAGOGIQUE")
     lines.append("")
@@ -459,21 +392,39 @@ def build_recap_text(
         lines.append(f"Enseignant absent : {enseignant_absent}")
     if dispositif:
         lines.append("Dispositif choisi : " + ", ".join(dispositif))
-    lines.append(f"Durée : {duree_label}")
     lines.append(f"Période : {periode_label}")
     lines.append("")
-    lines.append("CONTENU DU LIVRET (pour 2 jours sans remplacement) :")
+    lines.append("CONTENU DU LIVRET:")
     if competences:
         for dom, sous, comp in competences:
-            lines.append(f"• {dom} > {sous} > {comp}")
+            lines.append(f"• {comp}")
     else:
         lines.append("• (Aucune compétence sélectionnée)")
     if communication:
         lines.append("")
-        lines.append("COMMUNICATION (modèle) :")
+        lines.append("MESSAGE AUX FAMILLES :")
         lines.append(communication)
     lines.append("")
     return "\n".join(lines)
+
+
+# =========================
+# COULEURS DOMAINES
+# =========================
+
+DOMAIN_COLORS = {
+    "Mathématiques": "#2E86C1",
+    "Français": "#C0392B",
+    "Lecture et compréhension de l'écrit": "#AF601A",
+    "Langage oral": "#8E44AD",
+    "Questionner le monde": "#27AE60",
+    "Enseignement moral et civique": "#7D6608",
+    "Arts plastiques": "#E67E22",
+    "Éducation musicale": "#16A085",
+    "EPS": "#D35400",
+    "Anglais": "#6C3483",
+    "(Sans domaine)": "#7F8C8D",
+}
 
 
 # =========================
@@ -482,137 +433,95 @@ def build_recap_text(
 
 st.set_page_config(page_title="Plan de continuité pédagogique", layout="wide")
 ensure_dirs()
-from pathlib import Path
-import base64
 
-def load_font(font_path):
-    with open(font_path, "rb") as f:
-        return base64.b64encode(f.read()).decode()
+# ----- Bannière : logo à gauche, taille réduite -----
+if LOGO_PATH.exists():
+    col_logo, _ = st.columns([3, 1])
+    with col_logo:
+        st.image(str(LOGO_PATH), width=500)
+else:
+    st.warning(f"Logo introuvable : {LOGO_PATH.name}")
 
-BASE_DIR = Path(__file__).resolve().parent
-FONT_DIR = BASE_DIR / "assets" / "fonts"
-
-marianne_regular = load_font(FONT_DIR / "Marianne-Regular.woff2")
-marianne_bold = load_font(FONT_DIR / "Marianne-Bold.woff2")
-
-st.markdown(f"""
-<style>
-@font-face {{
-    font-family: 'Marianne';
-    src: url(data:font/woff2;base64,{marianne_regular}) format('woff2');
-    font-weight: 400;
-}}
-
-@font-face {{
-    font-family: 'Marianne';
-    src: url(data:font/woff2;base64,{marianne_bold}) format('woff2');
-    font-weight: 700;
-}}
-
-html, body, [class*="css"] {{
-    font-family: 'Marianne', sans-serif !important;
-}}
-</style>
-""", unsafe_allow_html=True)
-
-# ----- Bannière -----
-banner_left, banner_right = st.columns([1, 7], vertical_alignment="center")
-with banner_left:
-    if os.path.exists(LOGO_PATH):
-        st.image(LOGO_PATH, width=LOGO_WIDTH_PX)
-with banner_right:
-    st.markdown("## Plan de continuité pédagogique")
-    st.markdown(
-        "<div style='margin-top:-8px; font-size:14px; color:#555;'>"
-        "Direction des services départementaux de l’Education Nationale du Val d’Oise"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-# ----- Accueil : Diaporama (flèches) -----
+# ----- Diaporama -----
 slides = build_slides_list()
 if "slide_idx" not in st.session_state:
     st.session_state.slide_idx = 0
 
 if slides:
-    nav_l, nav_c, nav_r = st.columns([1, 6, 1], vertical_alignment="center")
+    nav_l, nav_c, nav_r = st.columns([1, 4, 1], vertical_alignment="center")
+
     with nav_l:
         if st.button("◀", use_container_width=True):
             st.session_state.slide_idx = (st.session_state.slide_idx - 1) % len(slides)
+
+    with nav_c:
+        col_slide = st.columns([1, 3, 1])[1]
+        with col_slide:
+            st.image(slides[st.session_state.slide_idx], width=650)
+
     with nav_r:
         if st.button("▶", use_container_width=True):
             st.session_state.slide_idx = (st.session_state.slide_idx + 1) % len(slides)
-    with nav_c:
-        st.image(slides[st.session_state.slide_idx], width=SLIDE_WIDTH_PX)
 else:
-    st.info(
-        "Diaporama indisponible : aucune image trouvée.\n\n"
-        "Ajoute des images à la racine nommées par exemple :\n"
-        "- contexte.png\n- anticipation.jpg\n- mise_en_oeuvre.png"
-    )
+    st.info("Aucune slide détectée. Ajoute tes PNG dans le dossier 'slides/'.")
 
-# ----- Ressources sous le diaporama -----
+# ----- Planification -----
 st.divider()
-st.subheader("Ressources")
+st.header("Planification")
 
 st.markdown(
     """
-**AVANT LA RENTRÉE :**  
-Afin de pouvoir bénéficier d’un accompagnement optimum à la continuité pédagogique,
-il est nécessaire, au préalable et en équipe, d’avoir désigné une personne ressource
-et d’avoir complété le dossier comprenant :
+**POUR LA RENTRÉE :**
 
-- la fiche « PCP » renseignée,  
-- les programmations communes,  
-- les répartitions d’élèves.  
-
-Le plan de continuité pédagogique aide le conseil des maîtres à déterminer l’organisation
-la plus adaptée à la situation de l’école (*répartition, accueil dans une classe du même niveau, regroupement*).
+**1.** Consulter le support interactif du plan de continuité pédagogique.  
+**2.** Opérer les choix de mise en œuvre du PCP.  
+**3.** Formaliser les choix dans la fiche PCP.
 """
 )
 
-st.link_button(
-    "🔗 Consulter le Genially – Plan de continuité pédagogique",
-    GENIALLY_URL,
-    use_container_width=True,
-)
-
-if os.path.exists(PROTOCOLE_CONTINUITE_PDF):
-    with open(PROTOCOLE_CONTINUITE_PDF, "rb") as f:
+plan_col1, plan_col2 = st.columns(2)
+with plan_col1:
+    st.link_button(
+        "1️⃣ Consulter le support interactif",
+        GENIALLY_URL,
+        use_container_width=True,
+    )
+with plan_col2:
+    if PROTOCOLE_CONTINUITE_PDF.exists():
         st.download_button(
-            "📄 Télécharger le Protocole de continuité pédagogique (PDF)",
-            data=f.read(),
-            file_name=PROTOCOLE_CONTINUITE_PDF,
+            "3️⃣ Télécharger la fiche PCP (PDF)",
+            data=PROTOCOLE_CONTINUITE_PDF.read_bytes(),
+            file_name=PROTOCOLE_CONTINUITE_PDF.name,
             mime="application/pdf",
             use_container_width=True,
         )
-else:
-    st.warning(f"Fichier introuvable : {PROTOCOLE_CONTINUITE_PDF}")
+    else:
+        st.warning(f"Fichier introuvable : {PROTOCOLE_CONTINUITE_PDF.name}")
 
 st.markdown(
     """
-**DECLENCHEMENT :**  
-Pendant l’année scolaire, lors de l’absence non remplacée d’un professeur, cet outil vous accompagne : 
+**EN CAS D’ABSENCE D’UN ENSEIGNANT :**  
+Le directeur ou la directrice de l’école est invité(e) à utiliser cet outil afin de :
 
-- dans la constitution du livret de ressources ;  
-- dans le choix de la communication à privilégier.  
-
-Cet outil vise à faciliter la prise de décision collective et à garantir la continuité des apprentissages pour tous les élèves.
+- suivre le protocole de continuité pédagogique pas à pas,
+- identifier la date de début et la date de fin de l’absence,
+- sélectionner les compétences à travailler,
+- générer les livrets d’exercices et les supports de communication adaptés.
 """
 )
 
 st.divider()
 
-# ----- Informations générales -----
+# ----- Activation et mise en œuvre -----
+st.header("Activation et mise en œuvre")
 st.subheader("Informations générales")
-st.warning(
-    "🔒 **Important — Protection des données :**\n\n"
-    "Les informations renseignées dans cet outil ne sont pas conservées en ligne. "
-    "Aucune donnée n’est stockée ni transmise. "
-    "Les contenus générés le sont uniquement pour la session en cours."
-)
 
-
+rgpd_col1, rgpd_col2 = st.columns([3, 1])
+with rgpd_col1:
+    st.markdown(
+        "🔒 **Important — Protection des données :** "
+        "Les informations renseignées dans cet outil ne sont pas conservées en ligne."
+    )
 
 livret_num = st.text_input("Numéro de livret (reporté sur les PDF)", value="")
 enseignant_absent = st.text_input("Enseignant absent", value="")
@@ -624,95 +533,67 @@ with row1[1]:
     try:
         classes_disponibles = load_class_list()
     except Exception as e:
-        st.error(f"Erreur chargement classes depuis {EXCEL_PATH} : {e}")
+        st.error(f"Erreur chargement classes depuis {EXCEL_PATH.name} : {e}")
         classes_disponibles = []
     classe = st.selectbox("Classe concernée", classes_disponibles)
 with row1[2]:
     DISPOSITIFS = [
-        "accueil dans une classe du même niveau",
-        "regroupement possible",
-        "répartition dans les autres classes",
-        "Continuité à distance",
+        "Répartition dans les autres classes",
+        "Répartition dans une classe d'un même niveau",
+        "Répartition dans une classe d'un même niveau + regroupement",
+        "Co-intervention / renfort interne",
     ]
     dispositif = st.multiselect("Dispositif choisi", options=DISPOSITIFS, default=[])
 with row1[3]:
-    duree_base = st.radio(
-        "Durée de l'absence",
-        options=["Inférieure ou égal à 5 jours", "Supérieure à 5 jours"],
-        horizontal=False,
-    )
-
-# Dates + “fin indéterminée” => “À partir de”
-st.markdown("#### Période")
-dcol1, dcol2, dcol3 = st.columns([2, 2, 2])
-with dcol1:
+    st.markdown("### Période")
     fin_indet = st.checkbox("Fin d'absence indéterminée", value=False)
-with dcol2:
-    date_debut = st.date_input("Début", value=date.today())
-with dcol3:
+    date_debut = st.date_input("Date de début", value=date.today())
     if fin_indet:
-        st.markdown("**Fin :** indéterminée")
+        st.markdown("**Date de fin :** indéterminée")
         date_fin = None
     else:
-        date_fin = st.date_input("Fin", value=date.today())
+        date_fin = st.date_input("Date de fin", value=date.today())
 
 if fin_indet:
-    periode_label = f"À partir du {date_debut}"
+    periode_label = f"À partir du {date_debut.strftime('%d/%m/%Y')}"
 else:
-    periode_label = f"Du {date_debut} au {date_fin}"
-
-duree_label = duree_base
-
-# ----- Niveau d'incidence : image AU DESSUS du choix + pas de mot "tension" -----
-st.markdown("#### Niveau d'incidence")
-
-inc_img = find_first_image_by_hints([h.lower() for h in INCIDENCES_HINTS])
-if inc_img and os.path.exists(inc_img):
-    st.image(inc_img, width=INCIDENCE_IMG_WIDTH_PX)
-
-incidence = st.selectbox("Choisir un niveau", options=INCIDENCE_OPTIONS, index=0)
-incidence_msg = message_selon_incidence(incidence)
-
-st.caption("Suggestion (adaptée au niveau sélectionné) :")
-st.info(incidence_msg)
+    periode_label = f"Du {date_debut.strftime('%d/%m/%Y')} au {date_fin.strftime('%d/%m/%Y')}"
 
 st.divider()
 
-# ----- Communication (modèle modifiable) -----
+# ----- Communication -----
 st.subheader("Communication (modèle modifiable)")
-
 st.info(
-    "Le message ci-dessous est proposé automatiquement selon le niveau d’incidence sélectionné. "
+    "Le message ci-dessous est proposé automatiquement. "
     "Vous pouvez le modifier si nécessaire."
 )
 
-# On initialise l'état
-if "last_incidence" not in st.session_state:
-    st.session_state.last_incidence = None
-if "communication_text" not in st.session_state:
-    st.session_state.communication_text = ""
 
-# Si le niveau d'incidence change, on recharge le modèle correspondant
-if st.session_state.last_incidence != incidence:
-    base_template = COMM_TEMPLATES_BY_INCIDENCE.get(incidence, "")
-    st.session_state.communication_text = render_comm_template(base_template, date_debut, dispositif)
-    st.session_state.last_incidence = incidence
+if "communication_text" not in st.session_state:
+    st.session_state.communication_text = render_comm_template(DEFAULT_COMM_TEMPLATE, date_debut, dispositif)
+if "last_comm_seed" not in st.session_state:
+    st.session_state.last_comm_seed = None
+
+current_seed = (date_debut.strftime("%d/%m/%Y"), tuple(dispositif))
+if st.session_state.last_comm_seed != current_seed:
+    st.session_state.communication_text = render_comm_template(DEFAULT_COMM_TEMPLATE, date_debut, dispositif)
+    st.session_state.last_comm_seed = current_seed
 
 include_comm_in_recap = st.checkbox("Inclure la communication dans la fiche récapitulative", value=True)
 
 communication = st.text_area(
-    "Message aux familles / ENT",
+    "Message aux familles (Dans le cahier de liaison et sur l'ENT)",
     value=st.session_state.communication_text,
-    height=190,
+    height=220,
 )
 
-# On conserve les modifications de l’utilisateur
 st.session_state.communication_text = communication
 
 st.divider()
 
-# ----- Contenu du livret : domaines + sous-domaines + compétences (mix possible) -----
-st.subheader("Contenu du livret (pour 2 jours sans remplacement)")
+# ----- Contenu du livret -----
+st.subheader("Contenu du livret")
+
 st.info(
     "Afin d’identifier les compétences travaillées durant la période précédant l’absence, "
     "vous pouvez vous aider du cahier journal de la classe, des programmations et des guides du maître utilisés par l’enseignant."
@@ -723,61 +604,74 @@ if not classe:
     st.stop()
 
 try:
-    df_comp = load_competences_for_class(classe)
+    df_comp = load_competences_for_class(classe).copy()
 except Exception as e:
     st.error(f"Erreur chargement compétences pour {classe} : {e}")
     st.stop()
 
-# Domaines (multi)
+df_comp = df_comp.dropna(subset=["Domaine", "Sous domaine", "Compétence"]).copy()
+df_comp["Domaine"] = df_comp["Domaine"].astype(str).str.strip()
+df_comp["Sous domaine"] = df_comp["Sous domaine"].astype(str).str.strip()
+df_comp["Compétence"] = df_comp["Compétence"].astype(str).str.strip()
+
+# Domaines
 domaines_dispo = sorted(df_comp["Domaine"].dropna().unique().tolist())
 domaines_selected = st.multiselect(
-    "1) Domaines (sélection multiple)",
+    "1) Domaine(s)",
     options=domaines_dispo,
     default=[],
 )
 
-df_dom = df_comp[df_comp["Domaine"].isin(domaines_selected)] if domaines_selected else df_comp.copy()
+df_dom = df_comp[df_comp["Domaine"].isin(domaines_selected)].copy()
 
-# Sous-domaines (multi) basés sur domaines sélectionnés
+if domaines_selected:
+    st.markdown("**Domaines sélectionnés :**")
+    for dom in domaines_selected:
+        badge(dom, DOMAIN_COLORS.get(dom, "#34495E"))
+
+# Sous-domaines
 sous_dispo = sorted(df_dom["Sous domaine"].dropna().unique().tolist())
 sous_selected = st.multiselect(
-    "2) Sous-domaines (sélection multiple)",
+    "2) Sous-domaine(s)",
     options=sous_dispo,
     default=[],
 )
 
-df_sous = df_dom[df_dom["Sous domaine"].isin(sous_selected)] if sous_selected else df_dom.copy()
+df_sous = df_dom[df_dom["Sous domaine"].isin(sous_selected)].copy()
 
-# Compétences disponibles (avec contexte dom/sous)
-df_sous = df_sous.dropna(subset=["Domaine", "Sous domaine", "Compétence"])
-df_sous["__label__"] = (
-    df_sous["Domaine"].astype(str)
-    + " > "
-    + df_sous["Sous domaine"].astype(str)
-    + " > "
-    + df_sous["Compétence"].astype(str)
-)
+if sous_selected:
+    st.markdown("**Sous-domaines sélectionnés :**")
+    for sous in sous_selected:
+        domaine_ref = None
+        try:
+            domaine_ref = df_dom[df_dom["Sous domaine"] == sous]["Domaine"].iloc[0]
+        except Exception:
+            domaine_ref = "(Sans domaine)"
+        badge(sous, DOMAIN_COLORS.get(domaine_ref, "#34495E"))
 
-labels = sorted(df_sous["__label__"].unique().tolist())
+# Compétences : affichage réduit à la compétence seule
+labels, label_to_triplet = make_unique_labels(df_sous)
 
 selected_labels = st.multiselect(
-    "3) Compétence(s) (sélection multiple)",
+    "3) Compétence(s)",
     options=labels,
     default=[],
 )
 
-# Transformer les labels en tuples (dom, sous, comp) et liste de comp seules pour chercher les PDFs
 selected_triplets: list[tuple[str, str, str]] = []
 selected_competences_only: list[str] = []
-for lab in selected_labels:
-    parts = [p.strip() for p in lab.split(">")]
-    if len(parts) >= 3:
-        dom, sous = parts[0], parts[1]
-        comp = ">".join(parts[2:]).strip()
-        selected_triplets.append((dom, sous, comp))
-        selected_competences_only.append(comp)
 
-# ----- Fiche récapitulative(toujours affichée) -----
+for lab in selected_labels:
+    dom, sous, comp = label_to_triplet[lab]
+    selected_triplets.append((dom, sous, comp))
+    selected_competences_only.append(comp)
+
+if selected_triplets:
+    st.markdown("**Compétences sélectionnées :**")
+    for dom, sous, comp in selected_triplets:
+        badge(comp, DOMAIN_COLORS.get(dom, "#34495E"))
+
+# ----- Fiche récapitulative -----
 comm_for_recap = communication if include_comm_in_recap else None
 recap_text = build_recap_text(
     livret_num=livret_num,
@@ -785,42 +679,45 @@ recap_text = build_recap_text(
     classe=classe,
     enseignant_absent=enseignant_absent,
     dispositif=dispositif,
-    duree_label=duree_label,
     periode_label=periode_label,
     competences=selected_triplets,
     communication=comm_for_recap,
 )
 
-st.subheader("Fiche récapitulative (toujours affichée)")
+st.title("Fiche récapitulative")
 st.text_area("Prévisualisation", recap_text, height=240)
 
 st.divider()
 
 # =========================
 # TÉLÉCHARGEMENTS
-# - Livret d’exercices = Fiche récapitulative + PDFs exercices
-# - Livret de corrections = Fiche récapitulative + PDFs corrections
-# - Pas de PDF "page infos" en trop
 # =========================
 
 st.subheader("Téléchargements")
 st.markdown(
-    "**💡 Conseil : téléchargez directement le livret d’exercices et le livret de corrections pour tout avoir au même moment.**"
+    "**💡 Conseil : téléchargez directement le livret d’exercices et le livret de corrections pour tout avoir au même endroit.**"
 )
-
 
 if not selected_competences_only:
     st.info("Sélectionne au moins une compétence pour générer les livrets.")
     st.stop()
 
-# PDF récap (utilisé comme 1ère partie du livret)
 recap_pdf = build_text_pdf(
     title="Fiche récapitulative — Plan de continuité pédagogique",
     body_text=recap_text,
     subtitle=f"N° de livret : {livret_num}" if livret_num else None,
 )
 
-# Collecte PDFs exercices + corrections (bibliothèque ou fallback)
+illus = list_illustrations()
+chosen_illustration = pick_illustration_for_livret_number(illus, livret_num)
+
+illus_pdf = None
+if chosen_illustration:
+    if chosen_illustration.lower().endswith(".pdf"):
+        illus_pdf = Path(chosen_illustration).read_bytes()
+    else:
+        illus_pdf = build_illustration_pdf(chosen_illustration)
+
 exercices_pdfs = []
 corrections_pdfs = []
 diag_ex = []
@@ -851,30 +748,19 @@ for cpt in selected_competences_only:
         diag_corr.append((cpt, corr_name))
     corrections_pdfs.append(corr_bytes)
 
-# Fusion : RÉCAP + compétences
-# --- Illustration déterminée par numéro de livret ---
-illus = list_illustrations()
-chosen_illustration = pick_illustration_for_livret(illus, livret_num, fallback_seed=classe)
+parts_ex = [recap_pdf]
+parts_corr = [recap_pdf]
+if illus_pdf is not None:
+    parts_ex.append(illus_pdf)
+    parts_corr.append(illus_pdf)
+parts_ex.extend(exercices_pdfs)
+parts_corr.extend(corrections_pdfs)
 
-if chosen_illustration:
-    if chosen_illustration.lower().endswith(".pdf"):
-        # Si c'est déjà un PDF, on l'intègre directement
-        with open(chosen_illustration, "rb") as f:
-            illus_pdf = f.read()
-    else:
-        # Sinon c'est une image → on génère une page PDF
-        illus_pdf = build_illustration_pdf(chosen_illustration)
-else:
-    illus_pdf = build_text_pdf(
-        "Illustration",
-        "Aucune illustration trouvée."
-    )
-
-# Ordre final : Fiche récapitulative -> Illustration -> Exercices / Corrections
-livret_exercices = merge_pdfs([recap_pdf, illus_pdf] + exercices_pdfs)
-livret_corrections = merge_pdfs([recap_pdf, illus_pdf] + corrections_pdfs)
+livret_exercices = merge_pdfs(parts_ex)
+livret_corrections = merge_pdfs(parts_corr)
 
 dl1, dl2 = st.columns(2)
+
 with dl1:
     st.download_button(
         "📘 Télécharger le livret d’exercices (PDF)",
@@ -882,7 +768,7 @@ with dl1:
         file_name=f"livret_exercices_{slugify_filename(classe)}_{slugify_filename(livret_num) if livret_num else 'livret'}.pdf",
         mime="application/pdf",
         use_container_width=True,
-        help="Recommandé : télécharge aussi le livret de corrections."
+        help="Recommandé : télécharge aussi le livret de corrections.",
     )
 with dl2:
     st.download_button(
@@ -891,10 +777,14 @@ with dl2:
         file_name=f"livret_corrections_{slugify_filename(classe)}_{slugify_filename(livret_num) if livret_num else 'livret'}.pdf",
         mime="application/pdf",
         use_container_width=True,
-        help="Recommandé : télécharge aussi le livret d’exercices."
+        help="Recommandé : télécharge aussi le livret d’exercices.",
     )
 
 with st.expander("Diagnostic (PDF trouvés dans les bibliothèques)"):
+    if chosen_illustration:
+        st.success(f"Illustration utilisée : {Path(chosen_illustration).name}")
+    else:
+        st.info("Aucune illustration trouvée pour ce numéro de livret.")
     st.markdown("### Exercices")
     for cpt, name in diag_ex:
         if name:
