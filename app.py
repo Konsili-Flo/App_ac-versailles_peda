@@ -545,7 +545,7 @@ with row1[2]:
     ]
     dispositif = st.multiselect("Dispositif choisi", options=DISPOSITIFS, default=[])
 with row1[3]:
-    st.markdown("### Période")
+    st.markdown("##### Période")
     fin_indet = st.checkbox("Fin d'absence indéterminée", value=False)
     date_debut = st.date_input("Date de début", value=date.today())
     if fin_indet:
