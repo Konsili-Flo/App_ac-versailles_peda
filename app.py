@@ -397,7 +397,7 @@ def build_recap_text(
 
     lines.append(f"Période : {periode_label}")
     lines.append("")
-    lines.append("CONTENU DU LIVRET pour 2 jours sans remplacement :")
+    lines.append("CONTENU DU LIVRET :")
 
     if competences:
         for dom, sous, comp in competences:
