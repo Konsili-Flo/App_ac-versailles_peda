@@ -190,7 +190,22 @@ def build_slides_list() -> list[str]:
 def read_pdf_by_competence(directory: Path, competence: str) -> tuple[bytes | None, str | None]:
     if not competence or not directory.exists():
         return None, None
+def has_exercice_pdf_strict(competence: str) -> bool:
+    """
+    Retourne True uniquement si un PDF existe avec exactement
+    le même nom que la compétence (après normalisation).
+    """
+    if not competence or not PDF_COMPETENCES_DIR.exists():
+        return False
 
+    target = normalize_for_match(competence)
+
+    for p in PDF_COMPETENCES_DIR.iterdir():
+        if p.is_file() and p.suffix.lower() == ".pdf":
+            if normalize_for_match(p.stem) == target:
+                return True
+
+    return False
     target = normalize_for_match(competence)
     pdf_files = [p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"]
 
@@ -623,7 +638,7 @@ df_comp["Sous domaine"] = df_comp["Sous domaine"].astype(str).str.strip()
 df_comp["Compétence"] = df_comp["Compétence"].astype(str).str.strip()
 
 # Ne garder que les compétences ayant une fiche PDF d’exercice disponible
-df_comp = df_comp[df_comp["Compétence"].apply(has_exercice_pdf)].copy()
+df_comp = df_comp[df_comp["Compétence"].apply(has_exercice_pdf_strict)].copy()
 
 if df_comp.empty:
     st.warning("Aucune fiche d’exercice disponible pour cette classe.")
