@@ -190,13 +190,55 @@ def build_slides_list() -> list[str]:
 def read_pdf_by_competence(directory: Path, competence: str) -> tuple[bytes | None, str | None]:
     if not competence or not directory.exists():
         return None, None
+def read_pdf_by_competence(directory: Path, competence: str) -> tuple[bytes | None, str | None]:
+    if not competence or not directory.exists():
+        return None, None
+
+    target = normalize_for_match(competence)
+
+    pdf_files = [
+        p for p in directory.iterdir()
+        if p.is_file() and p.suffix.lower() == ".pdf"
+    ]
+
+    if not pdf_files:
+        return None, None
+
+    candidates = []
+    for p in pdf_files:
+        norm = normalize_for_match(p.stem)
+        candidates.append((p, norm))
+
+    for p, norm in candidates:
+        if norm == target:
+            return p.read_bytes(), p.name
+
+    contains_hits = []
+    for p, norm in candidates:
+        if target in norm or norm in target:
+            score = difflib.SequenceMatcher(None, target, norm).ratio()
+            contains_hits.append((score, p))
+
+    if contains_hits:
+        contains_hits.sort(reverse=True, key=lambda x: x[0])
+        best = contains_hits[0][1]
+        return best.read_bytes(), best.name
+
+    scored = []
+    for p, norm in candidates:
+        score = difflib.SequenceMatcher(None, target, norm).ratio()
+        scored.append((score, p))
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+    best_score, best = scored[0]
+
+    if best_score >= 0.62:
+        return best.read_bytes(), best.name
+
+    return None, None
+
+
 def has_exercice_pdf_semistrict(competence: str) -> bool:
-    """
-    True si un PDF existe :
-    - nom exact normalisé
-    - ou nom qui commence par la compétence normalisée
-      ex : "comparer_les_fractions_exercices.pdf"
-    """
     if not competence or not PDF_COMPETENCES_DIR.exists():
         return False
 
